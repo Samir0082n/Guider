@@ -2,37 +2,28 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const axios = require('axios');
-const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Разрешаем CORS для любых источников (важно для работы фронтенда)
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
 // Инициализация Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// ВАЖНО: Используем модель из ВАШЕГО списка
-// gemini-2.5-flash-lite — это быстрая и современная модель
 const MODEL_NAME = "gemini-2.5-flash-lite";
 
-const model = genAI.getGenerativeModel({
-    model: MODEL_NAME
-    // Мы убрали strict JSON config, чтобы избежать ошибок совместимости.
-    // Мы попросим JSON текстом в промпте — это надежнее.
-});
+const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-// --- ЛОГИКА МАРШРУТОВ ---
+// --- МАРШРУТ 1: Создание маршрута ---
 app.post('/api/create-route', async (req, res) => {
     try {
         const { lat, lng, mode, type } = req.body;
-        console.log(`[ROUTE] Запрос: ${mode}, ${type} @ ${lat},${lng}`);
+        console.log(`[ROUTE] Request: ${mode}, ${type}`);
 
-        // Мощный промпт, чтобы заставить AI вернуть чистый JSON
         const prompt = `
             Act as a local tour guide. I am at coordinates: ${lat}, ${lng}.
             Create a route strictly containing 4 REAL, EXISTING locations nearby (within 3km) suitable for a '${type}' vibe.
@@ -48,23 +39,20 @@ app.post('/api/create-route', async (req, res) => {
         `;
 
         const result = await model.generateContent(prompt);
-        let text = result.response.text();
-
-        console.log("[AI RAW]:", text.substring(0, 50) + "...");
-
-        // Очистка ответа от мусора (если AI все-таки добавит markdown)
+        let text = result.response.text(); 
+        
+        // Очистка
         text = text.replace(/```json/g, '').replace(/```/g, '').trim();
 
         let places;
         try {
             places = JSON.parse(text);
         } catch (e) {
-            // Если парсинг не удался, пробуем найти массив внутри текста
             const match = text.match(/\[.*\]/s);
             if (match) {
                 places = JSON.parse(match[0]);
             } else {
-                throw new Error("AI вернул не JSON");
+                throw new Error("AI returned invalid JSON");
             }
         }
 
@@ -81,7 +69,7 @@ app.post('/api/create-route', async (req, res) => {
     }
 });
 
-// --- ГОЛОСОВОЙ ЧАТ ---
+// --- МАРШРУТ 2: Голосовой чат ---
 app.post('/api/voice-chat', upload.fields([{ name: 'audio' }, { name: 'image' }]), async (req, res) => {
     try {
         console.log(`[VOICE] New request`);
@@ -105,11 +93,10 @@ app.post('/api/voice-chat', upload.fields([{ name: 'audio' }, { name: 'image' }]
             parts.push("Answer based on this image.");
         }
 
-        // Используем ту же модель, она мультимодальная
         const result = await model.generateContent(parts);
         const aiResponseText = result.response.text();
 
-        // ElevenLabs TTS
+        // ElevenLabs
         const ttsResponse = await axios({
             method: 'post',
             url: `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
@@ -136,7 +123,6 @@ app.post('/api/voice-chat', upload.fields([{ name: 'audio' }, { name: 'image' }]
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-});
+// ГЛАВНОЕ ИЗМЕНЕНИЕ ДЛЯ VERCEL:
+// Мы экспортируем приложение, а не запускаем listen
+module.exports = app;
