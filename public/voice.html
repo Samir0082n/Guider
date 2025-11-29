@@ -1,190 +1,714 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Cohana Voice</title>
+  <title>Advanced Talk - Ultimate</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- ONNX Runtime and VAD -->
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.11/dist/bundle.min.js"></script>
   <style>
-      body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; margin: 0; overflow: hidden; align-items: center; justify-content: flex-end; }
-      #status { position: absolute; top: 40px; background: rgba(30,30,30,0.8); padding: 10px 20px; border-radius: 20px; font-size: 14px; backdrop-filter: blur(5px); border: 1px solid #444; z-index: 20; }
-      #camera-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; display: none; }
-      video { width: 100%; height: 100%; object-fit: cover; opacity: 1; }
-      .controls { z-index: 10; margin-bottom: 40px; display: flex; gap: 20px; align-items: center; background: rgba(20,20,20,0.8); padding: 15px 30px; border-radius: 50px; border: 1px solid #444; backdrop-filter: blur(10px); }
-      .btn { width: 60px; height: 60px; border-radius: 50%; border: none; font-size: 24px; cursor: pointer; color: white; background: #222; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
-      .btn:active { transform: scale(0.9); }
-      .btn-mic { background: #3a86ff; box-shadow: 0 0 15px rgba(58, 134, 255, 0.4); }
-      .btn-mic.listening { background: #ff4757; animation: pulse 1.5s infinite; }
-      .btn-mic.processing { background: white; color: black; }
-      @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.4); } 70% { box-shadow: 0 0 0 20px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
-      .cam-overlay { display: none; }
-      .camera-mode .cam-overlay { display: block; }
+      :root {
+        --pill-bg: rgba(20, 20, 20, 0.85);
+        --pill-border: rgba(255, 255, 255, 0.15);
+        --glass-blur: 25px;
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        background: #000;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        color: #fff;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        align-items: center;
+        transition: background-color 0.4s ease;
+      }
+
+      /* --- VISUALIZER (Updated Design) --- */
+      #visualizerContainer {
+        position: absolute;
+        width: 94%; /* Rounded look: doesn't touch sides */
+        left: 3%;
+        height: 35vh;
+        bottom: 110px; /* Sits above the pill */
+        z-index: 10;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.5s ease;
+        border-radius: 40px; /* Rounded corners for wave container */
+        overflow: hidden;    /* Clip the canvas to corners */
+        /* Gradient background for Voice Mode */
+        background: radial-gradient(ellipse at bottom, rgba(20, 30, 60, 0.6) 0%, rgba(0,0,0,0) 70%);
+      }
+      
+      #voiceWaveCanvas {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+        filter: blur(15px);
+      }
+
+      /* --- CAMERA LAYER (Updated Design) --- */
+      #cameraPreviewContainer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+        display: none;
+        background: #000;
+      }
+
+      #liveCameraFeed {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: all 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+      }
+
+      /* Camera Mode Active Styles */
+      body.camera-mode-active #cameraPreviewContainer {
+        display: block;
+      }
+      
+      body.camera-mode-active #liveCameraFeed {
+        /* Floating Card Design */
+        position: absolute;
+        top: 15px;           /* Gap from top */
+        left: 3%;            /* Gap from left */
+        width: 94%;          /* Lesser width */
+        height: calc(100% - 150px); /* Stop before the pill area */
+        border-radius: 45px; /* Very rounded corners */
+        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 0 0 1px rgba(0,0,0,0.5); /* Subtle inset shadow definition */
+      }
+      
+      /* In camera mode, visualizer becomes an overlay */
+      body.camera-mode-active #visualizerContainer {
+          background: transparent; /* Clear background to see video */
+          bottom: 135px; /* Align inside the video frame visually */
+          width: 94%;
+          left: 3%;
+          border-radius: 0 0 45px 45px; /* Match bottom rounding of video */
+      }
+
+      /* Camera Controls */
+      .camera-controls-overlay {
+        position: absolute;
+        top: 40px;
+        right: 25px; /* Adjusted for new margin */
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        z-index: 20;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+      }
+      body.camera-mode-active .camera-controls-overlay {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .cam-icon-btn {
+        background: rgba(0, 0, 0, 0.4);
+        border: 1px solid rgba(255,255,255,0.2);
+        color: #fff;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        cursor: pointer;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        transition: transform 0.2s;
+      }
+      .cam-icon-btn:active { transform: scale(0.9); }
+      .cam-icon-btn.active { color: #f1c40f; border-color: #f1c40f; }
+
+      /* --- STATUS MESSAGE --- */
+      #statusMessage {
+        position: fixed;
+        top: 50px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(10,10,10,0.75);
+        color: #eee;
+        padding: 10px 24px;
+        border-radius: 30px;
+        font-size: 14px;
+        font-weight: 500;
+        border: 1px solid rgba(255,255,255,0.1);
+        backdrop-filter: blur(15px);
+        display: none;
+        z-index: 100;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      }
+
+      /* --- CONTROL PILL --- */
+      #bottomControls {
+        position: relative;
+        width: 300px;
+        height: 130px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 50;
+        padding-bottom: 30px;
+      }
+
+      .glass-pill {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 88%;
+        max-width: 340px;
+        height: 80px;
+        padding: 0 20px;
+        background: var(--pill-bg);
+        border: 1px solid var(--pill-border);
+        border-radius: 40px;
+        backdrop-filter: blur(var(--glass-blur));
+        -webkit-backdrop-filter: blur(var(--glass-blur));
+        box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+        transition: transform 0.2s ease;
+      }
+
+      .control-group { display: contents; }
+      .hidden { display: none !important; }
+
+      .control-button {
+        background: transparent;
+        border: none;
+        color: rgba(255,255,255,0.5);
+        width: 55px;
+        height: 55px;
+        font-size: 20px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      .control-button:active { transform: scale(0.85); }
+      .control-button:hover { color: #fff; background: rgba(255,255,255,0.1); }
+
+      /* Main Action Button */
+      .main-trigger {
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.15);
+        color: #fff;
+        font-size: 24px;
+      }
+
+      /* States */
+      .main-trigger.listening {
+        background: #ff4d4d;
+        color: #fff;
+        box-shadow: 0 0 25px rgba(255, 77, 77, 0.5);
+      }
+      
+      .main-trigger.processing {
+        background: #fff;
+        color: #000;
+        animation: pulse-load 1.5s infinite;
+      }
+      .main-trigger.processing i { display: none; }
+      .main-trigger.processing::after {
+        content: '';
+        width: 22px;
+        height: 22px;
+        border: 3px solid #000;
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        position: absolute;
+      }
+
+      @keyframes spin { 100% { transform: rotate(360deg); } }
+      @keyframes pulse-load {
+        0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(255, 255, 255, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+      }
+
   </style>
 </head>
-<body class="">
+<body>
 
-  <div id="camera-container">
-    <video id="video" playsinline autoplay muted></video>
+  <div id="visualizerContainer">
+      <canvas id="voiceWaveCanvas"></canvas>
   </div>
 
-  <div id="status">Tap mic to speak</div>
+  <div id="statusMessage">Ready</div>
 
-  <div class="controls">
-    <button class="btn" id="cam-btn" onclick="toggleCamera()"><i class="fas fa-camera"></i></button>
-    <button class="btn btn-mic" id="mic-btn"><i class="fas fa-microphone"></i></button>
-    <button class="btn" onclick="location.href='index.html'"><i class="fas fa-map-marker-alt"></i></button>
+  <div id="cameraPreviewContainer">
+    <video id="liveCameraFeed" playsinline autoplay muted></video>
+    <div class="camera-controls-overlay">
+       <button class="cam-icon-btn" id="switchCameraButton"><i class="fas fa-sync-alt"></i></button>
+       <button class="cam-icon-btn" id="flashlightButton"><i class="fas fa-bolt"></i></button>
+    </div>
   </div>
 
-  <script>
-    const API_URL = '/api/voice-chat';
-    let myvad, isListening = false, isProcessing = false, isCamera = false;
+  <div id="bottomControls">
+    <div class="glass-pill">
+        
+        <div class="control-group" id="voiceModeGroup">
+            <button class="control-button" id="btnOpenCam"><i class="fas fa-camera"></i></button>
+            <button class="control-button main-trigger" id="btnMicVoice"><i class="fas fa-microphone"></i></button>
+            <button class="control-button" id="btnCloseApp"><i class="fas fa-times"></i></button>
+        </div>
+
+        <div class="control-group hidden" id="videoModeGroup">
+            <button class="control-button" id="btnExitCam"><i class="fas fa-chevron-left"></i></button>
+            <button class="control-button main-trigger" id="btnMicVideo"><i class="fas fa-microphone"></i></button>
+            <button class="control-button" style="opacity: 0; pointer-events: none;"><i class="fas fa-times"></i></button>
+        </div>
+
+    </div>
+  </div>
+
+  <script type="module">
+    import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "https://cdn.jsdelivr.net/npm/@google/generative-ai/+esm";
+
+    /* --- CONFIG & CONSTANTS --- */
+    const API_KEY = 'AIzaSyDAD48tfhGxMpBk8C0bUTcLDzJuoJNO2L4';
+    const ELEVENLABS_API_KEY = 'sk_572d97618d596745dd95d07d43525146642db435d9942fc4';
+    const ELEVENLABS_VOICE_ID = 'QxpsWUTZAxznFqyH1goJ';
+    
+    const SYSTEM_PROMPT = `You are Cohana, a witty and helpful AI companion. 
+    IMPORTANT: You are communicating via Voice (Text-to-Speech). 
+    1. Strictly DO NOT use LaTeX, KaTeX, markdown, emojis, asterisks, or special characters (like #, *, _).
+    2. Write numbers as words if they are short (e.g., "five" instead of "5").
+    3. Speak naturally and casually. 
+    4. If asked for a list, speak it in a flowy sentence structure rather than bullet points.
+    5. ALWAYS answer in the same language that user speaks so he would understand you`;
+
+    /* --- AUDIO SYSTEM --- */
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = audioCtx.createAnalyser();
+    analyser.smoothingTimeConstant = 0.7;
+    analyser.fftSize = 512;
+    const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+    
+    let sourceNode = null; 
+    let ttsNode = null;    
 
-    const ui = {
-      status: document.getElementById('status'),
-      mic: document.getElementById('mic-btn'),
-      video: document.getElementById('video'),
-      camContainer: document.getElementById('camera-container'),
-      camBtn: document.getElementById('cam-btn')
+    /* --- APP STATE --- */
+    const STATE = {
+        isCamera: false,
+        isListening: false,
+        isProcessing: false,
+        isPlaying: false,
+        vad: null,
+        camStream: null,
+        chat: null
     };
 
-    // VAD Setup
-    async function initVAD() {
-      try {
-        myvad = await vad.MicVAD.new({
-          onSpeechEnd: (audio) => {
-            if (isListening && !isProcessing) processAudio(audio);
-          }
-        });
-      } catch (e) { alert("Mic Error: " + e.message); }
-    }
-
-    // Controls
-    ui.mic.onclick = () => {
-      if (isProcessing) return;
-      isListening ? stopListening() : startListening();
+    /* --- UI ELEMENTS --- */
+    const el = {
+        vis: document.getElementById('visualizerContainer'),
+        canvas: document.getElementById('voiceWaveCanvas'),
+        status: document.getElementById('statusMessage'),
+        video: document.getElementById('liveCameraFeed'),
+        voiceGroup: document.getElementById('voiceModeGroup'),
+        videoGroup: document.getElementById('videoModeGroup'),
+        mics: document.querySelectorAll('.main-trigger'),
+        btnOpenCam: document.getElementById('btnOpenCam'),
+        btnExitCam: document.getElementById('btnExitCam'),
+        btnSwitchCam: document.getElementById('switchCameraButton'),
+        btnFlash: document.getElementById('flashlightButton'),
+        btnClose: document.getElementById('btnCloseApp')
     };
 
-    function startListening() {
-      if(!myvad) return;
-      myvad.start();
-      isListening = true;
-      ui.mic.classList.add('listening');
-      ui.mic.innerHTML = '<i class="fas fa-stop"></i>';
-      ui.status.textContent = "Listening...";
-      audioCtx.resume();
+    function triggerHaptic(strength = 10) {
+        if (navigator.vibrate) navigator.vibrate(strength);
     }
 
-    function stopListening() {
-      if(myvad) myvad.pause();
-      isListening = false;
-      ui.mic.classList.remove('listening');
-      ui.mic.innerHTML = '<i class="fas fa-microphone"></i>';
-      ui.status.textContent = "Paused";
+    /* --- VISUALIZER (Original Logic) --- */
+    const waveLayers = [
+        { color: "rgba(50, 180, 255, 0.7)", speed: 0.02, phase: 0, amplitude: 1.1 }, 
+        { color: "rgba(180, 100, 255, 0.6)", speed: 0.03, phase: Math.PI / 2, amplitude: 1.3 }, 
+        { color: "rgba(100, 200, 255, 0.5)", speed: 0.015, phase: Math.PI, amplitude: 0.9 } 
+    ];
+
+    let animId;
+    function startVisualizer() {
+        el.vis.style.opacity = '1';
+        if (animId) return;
+
+        const ctx = el.canvas.getContext('2d');
+        el.canvas.width = el.vis.clientWidth;
+        el.canvas.height = el.vis.clientHeight;
+
+        function render() {
+            animId = requestAnimationFrame(render);
+            analyser.getByteFrequencyData(frequencyData);
+            
+            const { width, height } = el.canvas;
+            ctx.clearRect(0, 0, width, height);
+
+            let total = 0;
+            for(let i=0; i<frequencyData.length; i++) total += frequencyData[i];
+            let avg = total / frequencyData.length;
+            let vol = (avg / 128.0) * 1.5 + 0.1;
+
+            waveLayers.forEach(layer => {
+                layer.phase += layer.speed;
+                ctx.beginPath();
+                
+                const grad = ctx.createLinearGradient(0, height, 0, 0);
+                grad.addColorStop(0, layer.color);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = grad;
+
+                ctx.moveTo(0, height);
+
+                for (let i = 0; i < frequencyData.length; i+=2) {
+                    const x = (i / (frequencyData.length -1)) * width;
+                    const baseH = (frequencyData[i] / 255) * height * 0.6 * vol * layer.amplitude;
+                    const yOffset = Math.sin(i * 0.1 + layer.phase) * 15 * vol;
+                    const y = height - baseH - yOffset - 5;
+
+                    const prevX = i === 0 ? 0 : ((i - 2) / (frequencyData.length - 1)) * width;
+                    const cpx = prevX + (x - prevX) / 2;
+                    const cpy = y; 
+                    
+                    if (i===0) ctx.lineTo(x,y);
+                    else ctx.quadraticCurveTo(cpx, cpy, x, y);
+                }
+                
+                ctx.lineTo(width, height);
+                ctx.closePath();
+                ctx.fill();
+            });
+        }
+        render();
     }
 
-    // Processing
-    async function processAudio(audioFloat32) {
-      stopListening();
-      isProcessing = true;
-      ui.mic.classList.add('processing');
-      ui.mic.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-      ui.status.textContent = "Thinking...";
-
-      try {
-        const wavBlob = floatToWav(audioFloat32);
-        const formData = new FormData();
-        formData.append('audio', wavBlob, 'input.wav');
-
-        if (isCamera) {
-          const imageBlob = await captureImage();
-          formData.append('image', imageBlob, 'capture.jpg');
+    /* --- AUDIO PLAYER --- */
+    class SmartPlayer {
+        constructor() {
+            this.queue = [];
+            this.isPlay = false;
+            this.onEmpty = null;
         }
 
-        const response = await fetch(API_URL, { method: 'POST', body: formData });
-        const data = await response.json();
+        add(chunk) {
+            this.queue.push(chunk);
+            if (!this.isPlay) this.process();
+        }
 
-        if (data.error) throw new Error(data.error);
+        async process() {
+            if (this.queue.length === 0) {
+                this.isPlay = false;
+                if (this.onEmpty) this.onEmpty();
+                return;
+            }
+            this.isPlay = true;
+            STATE.isPlaying = true;
+            
+            const blob = this.queue.shift();
+            const ab = await blob.arrayBuffer();
+            try {
+                const buffer = await audioCtx.decodeAudioData(ab);
+                ttsNode = audioCtx.createBufferSource();
+                ttsNode.buffer = buffer;
+                ttsNode.connect(analyser); 
+                ttsNode.connect(audioCtx.destination);
+                ttsNode.onended = () => this.process();
+                ttsNode.start(0);
+            } catch (e) {
+                console.error(e);
+                this.process();
+            }
+        }
+        
+        stop() {
+            if (ttsNode) { ttsNode.stop(); ttsNode = null; }
+            this.queue = [];
+            this.isPlay = false;
+            STATE.isPlaying = false;
+        }
+    }
+    const player = new SmartPlayer();
 
-        ui.status.textContent = "Speaking...";
-        await playAudio(data.audio);
-
-      } catch (err) {
-        console.error(err);
-        ui.status.textContent = "Error";
-      } finally {
-        isProcessing = false;
-        ui.mic.classList.remove('processing');
-        ui.mic.innerHTML = '<i class="fas fa-microphone"></i>';
-        ui.status.textContent = "Ready";
-      }
+    /* --- VAD HANDLER --- */
+    async function initVAD() {
+        try {
+            STATE.vad = await vad.MicVAD.new({
+                onSpeechStart: () => {
+                    if(STATE.isPlaying) {
+                        player.stop();
+                        triggerHaptic(20);
+                    }
+                },
+                onSpeechEnd: (audio) => {
+                    pauseListening();
+                    triggerHaptic(15);
+                    setProcess(true);
+                    const blob = floatToWav(audio);
+                    processAudio(blob);
+                }
+            });
+        } catch(e) {
+            console.error("VAD Error", e);
+            showStatus("Mic Error");
+        }
     }
 
-    // Camera Logic
-    function toggleCamera() {
-      isCamera = !isCamera;
-      ui.camContainer.style.display = isCamera ? 'block' : 'none';
-      ui.camBtn.style.color = isCamera ? '#3a86ff' : 'white';
+    function startListening() {
+        if (!STATE.vad) return;
+        audioCtx.resume();
+        
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            if(sourceNode) sourceNode.disconnect();
+            sourceNode = audioCtx.createMediaStreamSource(stream);
+            sourceNode.connect(analyser);
+        });
 
-      if (isCamera) {
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-          .then(stream => ui.video.srcObject = stream);
-      } else {
-        if(ui.video.srcObject) ui.video.srcObject.getTracks().forEach(t => t.stop());
-        ui.video.srcObject = null;
-      }
+        player.stop();
+        STATE.vad.start();
+        STATE.isListening = true;
+        updateMicBtns('listening');
+        startVisualizer();
+        showStatus("Listening...");
+        triggerHaptic(10);
     }
 
-    async function captureImage() {
-      const canvas = document.createElement('canvas');
-      canvas.width = ui.video.videoWidth;
-      canvas.height = ui.video.videoHeight;
-      canvas.getContext('2d').drawImage(ui.video, 0, 0);
-      return new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+    function pauseListening() {
+        if(STATE.vad) STATE.vad.pause();
+        STATE.isListening = false;
+        updateMicBtns('idle');
     }
 
-    // Audio Helpers
-    async function playAudio(base64) {
-      const bin = atob(base64);
-      const arr = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      const buf = await audioCtx.decodeAudioData(arr.buffer);
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(audioCtx.destination);
-      src.start(0);
-      return new Promise(r => src.onended = r);
+    function setProcess(bool) {
+        STATE.isProcessing = bool;
+        updateMicBtns(bool ? 'processing' : 'idle');
+        if(bool) showStatus("Thinking...");
     }
 
+    /* --- AI LOGIC --- */
+    async function initGemini() {
+        const gen = new GoogleGenerativeAI(API_KEY);
+        const model = gen.getGenerativeModel({ 
+            model: "gemini-flash-lite-latest",
+            tools:[{google_search:{}}],
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }
+        });
+        STATE.chat = model.startChat();
+    }
+
+    async function processAudio(audioBlob) {
+        try {
+            if(!STATE.chat) await initGemini();
+
+            const b64 = await new Promise(r => {
+                const read = new FileReader();
+                read.onload = () => r(read.result.split(',')[1]);
+                read.readAsDataURL(audioBlob);
+            });
+
+            const parts = [{ inlineData: { mimeType: 'audio/wav', data: b64 } }];
+            
+            if(STATE.isCamera && STATE.camStream) {
+                const img = captureCam();
+                parts.push({ inlineData: { mimeType: 'image/jpeg', data: img } });
+            }
+
+            const result = await STATE.chat.sendMessage(parts);
+            const text = result.response.text();
+            
+            setProcess(false);
+            showStatus("Speaking...");
+            streamAudio(text);
+
+        } catch(e) {
+            console.error(e);
+            setProcess(false);
+            showStatus("Error");
+            startListening();
+        }
+    }
+
+    function streamAudio(text) {
+        player.onEmpty = () => {
+            startListening();
+        };
+
+        const ws = new WebSocket(wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_turbo_v2_5);
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ 
+                text: " ", 
+                xi_api_key: ELEVENLABS_API_KEY,
+                voice_settings: { stability: 0.5, similarity_boost: 0.8 } 
+            }));
+            ws.send(JSON.stringify({ text: text, try_trigger_generation: true }));
+            ws.send(JSON.stringify({ text: "" }));
+        };
+        ws.onmessage = (e) => {
+            const d = JSON.parse(e.data);
+            if(d.audio) {
+                const bin = atob(d.audio);
+                const arr = new Uint8Array(bin.length);
+                for(let i=0; i<bin.length; i++) arr[i] = bin.charCodeAt(i);
+                player.add(new Blob([arr.buffer], {type: 'audio/mpeg'}));
+            }
+        };
+    }
+
+    /* --- CAMERA UTILS --- */
+    function toggleCam() {
+        triggerHaptic(15);
+        STATE.isCamera = !STATE.isCamera;
+        if(STATE.isCamera) {
+            document.body.classList.add('camera-mode-active');
+            el.voiceGroup.classList.add('hidden');
+            el.videoGroup.classList.remove('hidden');
+            startCam('environment');
+        } else {
+            document.body.classList.remove('camera-mode-active');
+            el.voiceGroup.classList.remove('hidden');
+            el.videoGroup.classList.add('hidden');
+            stopCam();
+        }
+        // Trigger canvas resize for new container shape
+        setTimeout(() => {
+            el.canvas.width = el.vis.clientWidth;
+            el.canvas.height = el.vis.clientHeight;
+        }, 500);
+    }
+
+    async function startCam(facing) {
+        stopCam();
+        try {
+            STATE.camStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: facing, width: 1280, height: 720 }
+            });
+            el.video.srcObject = STATE.camStream;
+        } catch(e) { showStatus("Cam Error"); toggleCam(); }
+    }
+
+    function stopCam() {
+        if(STATE.camStream) STATE.camStream.getTracks().forEach(t => t.stop());
+        el.video.srcObject = null;
+    }
+
+    function captureCam() {
+        const c = document.createElement('canvas');
+        c.width = 640; c.height = 480;
+        c.getContext('2d').drawImage(el.video, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', 0.6).split(',')[1];
+    }
+
+    /* --- HELPERS --- */
     function floatToWav(samples) {
-      const buffer = new ArrayBuffer(44 + samples.length * 2);
-      const view = new DataView(buffer);
-      const writeString = (view, offset, string) => {
-        for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
-      };
-      writeString(view, 0, 'RIFF');
-      view.setUint32(4, 36 + samples.length * 2, true);
-      writeString(view, 8, 'WAVE');
-      writeString(view, 12, 'fmt ');
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, 1, true);
-      view.setUint32(24, 16000, true);
-      view.setUint32(28, 32000, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      writeString(view, 36, 'data');
-      view.setUint32(40, samples.length * 2, true);
-      for (let i = 0; i < samples.length; i++) {
-        let s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-      }
-      return new Blob([view], { type: 'audio/wav' });
+        const buffer = new ArrayBuffer(44 + samples.length * 2);
+        const view = new DataView(buffer);
+        const writeString = (view, offset, string) => {
+            for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+        };
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + samples.length * 2, true);
+        writeString(view, 8, 'WAVE');
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, 16000, true);
+        view.setUint32(28, 32000, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeString(view, 36, 'data');
+        view.setUint32(40, samples.length * 2, true);
+        for (let i = 0; i < samples.length; i++) {
+            let s = Math.max(-1, Math.min(1, samples[i]));
+            view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+        return new Blob([view], { type: 'audio/wav' });
     }
 
+    function updateMicBtns(status) {
+        el.mics.forEach(btn => {
+            btn.classList.remove('listening', 'processing');
+            btn.innerHTML = '<i class="fas fa-microphone"></i>';
+            if(status === 'listening') {
+                btn.classList.add('listening');
+                btn.innerHTML = '<i class="fas fa-stop"></i>';
+            }
+            if(status === 'processing') {
+                btn.classList.add('processing');
+                btn.innerHTML = '';
+            }
+        });
+    }
+
+    function showStatus(msg) {
+        el.status.textContent = msg;
+        el.status.style.display = 'block';
+        setTimeout(() => el.status.style.display = 'none', 3000);
+    }
+
+    /* --- LISTENERS --- */
+    el.btnOpenCam.onclick = toggleCam;
+    el.btnExitCam.onclick = toggleCam;
+    el.btnClose.onclick = () => window.location.href = 'index.html';
+    
+    const handleMicClick = () => {
+        triggerHaptic(10);
+        if(STATE.isProcessing) return;
+        if(STATE.isListening) {
+            pauseListening();
+            showStatus("Paused");
+        } else if(STATE.isPlaying) {
+            player.stop();
+            startListening();
+        } else {
+            startListening();
+        }
+    };
+    el.mics.forEach(b => b.onclick = handleMicClick);
+
+    let facing = 'environment';
+    el.btnSwitchCam.onclick = () => {
+        facing = facing === 'environment' ? 'user' : 'environment';
+        startCam(facing);
+    };
+    el.btnFlash.onclick = () => {
+        const track = STATE.camStream.getVideoTracks()[0];
+        const caps = track.getCapabilities();
+        if(caps.torch) {
+            const on = !el.btnFlash.classList.contains('active');
+            track.applyConstraints({ advanced: [{ torch: on }] });
+            el.btnFlash.classList.toggle('active', on);
+        } else showStatus("No Flash");
+    };
+
+    window.addEventListener('resize', () => {
+        el.canvas.width = el.vis.clientWidth;
+        el.canvas.height = el.vis.clientHeight;
+    });
     initVAD();
+
   </script>
 </body>
 </html>
