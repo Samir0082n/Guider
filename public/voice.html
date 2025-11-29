@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Cohana Voice</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.11/dist/bundle.min.js"></script>
+  <style>
+      body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; margin: 0; overflow: hidden; align-items: center; justify-content: flex-end; }
+      #status { position: absolute; top: 40px; background: rgba(30,30,30,0.8); padding: 10px 20px; border-radius: 20px; font-size: 14px; backdrop-filter: blur(5px); border: 1px solid #444; z-index: 20; }
+      #camera-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; display: none; }
+      video { width: 100%; height: 100%; object-fit: cover; opacity: 1; }
+      .controls { z-index: 10; margin-bottom: 40px; display: flex; gap: 20px; align-items: center; background: rgba(20,20,20,0.8); padding: 15px 30px; border-radius: 50px; border: 1px solid #444; backdrop-filter: blur(10px); }
+      .btn { width: 60px; height: 60px; border-radius: 50%; border: none; font-size: 24px; cursor: pointer; color: white; background: #222; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+      .btn:active { transform: scale(0.9); }
+      .btn-mic { background: #3a86ff; box-shadow: 0 0 15px rgba(58, 134, 255, 0.4); }
+      .btn-mic.listening { background: #ff4757; animation: pulse 1.5s infinite; }
+      .btn-mic.processing { background: white; color: black; }
+      @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.4); } 70% { box-shadow: 0 0 0 20px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+      .cam-overlay { display: none; }
+      .camera-mode .cam-overlay { display: block; }
+  </style>
+</head>
+<body class="">
+
+  <div id="camera-container">
+    <video id="video" playsinline autoplay muted></video>
+  </div>
+
+  <div id="status">Tap mic to speak</div>
+
+  <div class="controls">
+    <button class="btn" id="cam-btn" onclick="toggleCamera()"><i class="fas fa-camera"></i></button>
+    <button class="btn btn-mic" id="mic-btn"><i class="fas fa-microphone"></i></button>
+    <button class="btn" onclick="location.href='index.html'"><i class="fas fa-map-marker-alt"></i></button>
+  </div>
+
+  <script>
+    const API_URL = '/api/voice-chat';
+    let myvad, isListening = false, isProcessing = false, isCamera = false;
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const ui = {
+      status: document.getElementById('status'),
+      mic: document.getElementById('mic-btn'),
+      video: document.getElementById('video'),
+      camContainer: document.getElementById('camera-container'),
+      camBtn: document.getElementById('cam-btn')
+    };
+
+    // VAD Setup
+    async function initVAD() {
+      try {
+        myvad = await vad.MicVAD.new({
+          onSpeechEnd: (audio) => {
+            if (isListening && !isProcessing) processAudio(audio);
+          }
+        });
+      } catch (e) { alert("Mic Error: " + e.message); }
+    }
+
+    // Controls
+    ui.mic.onclick = () => {
+      if (isProcessing) return;
+      isListening ? stopListening() : startListening();
+    };
+
+    function startListening() {
+      if(!myvad) return;
+      myvad.start();
+      isListening = true;
+      ui.mic.classList.add('listening');
+      ui.mic.innerHTML = '<i class="fas fa-stop"></i>';
+      ui.status.textContent = "Listening...";
+      audioCtx.resume();
+    }
+
+    function stopListening() {
+      if(myvad) myvad.pause();
+      isListening = false;
+      ui.mic.classList.remove('listening');
+      ui.mic.innerHTML = '<i class="fas fa-microphone"></i>';
+      ui.status.textContent = "Paused";
+    }
+
+    // Processing
+    async function processAudio(audioFloat32) {
+      stopListening();
+      isProcessing = true;
+      ui.mic.classList.add('processing');
+      ui.mic.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+      ui.status.textContent = "Thinking...";
+
+      try {
+        const wavBlob = floatToWav(audioFloat32);
+        const formData = new FormData();
+        formData.append('audio', wavBlob, 'input.wav');
+
+        if (isCamera) {
+          const imageBlob = await captureImage();
+          formData.append('image', imageBlob, 'capture.jpg');
+        }
+
+        const response = await fetch(API_URL, { method: 'POST', body: formData });
+        const data = await response.json();
+
+        if (data.error) throw new Error(data.error);
+
+        ui.status.textContent = "Speaking...";
+        await playAudio(data.audio);
+
+      } catch (err) {
+        console.error(err);
+        ui.status.textContent = "Error";
+      } finally {
+        isProcessing = false;
+        ui.mic.classList.remove('processing');
+        ui.mic.innerHTML = '<i class="fas fa-microphone"></i>';
+        ui.status.textContent = "Ready";
+      }
+    }
+
+    // Camera Logic
+    function toggleCamera() {
+      isCamera = !isCamera;
+      ui.camContainer.style.display = isCamera ? 'block' : 'none';
+      ui.camBtn.style.color = isCamera ? '#3a86ff' : 'white';
+
+      if (isCamera) {
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+          .then(stream => ui.video.srcObject = stream);
+      } else {
+        if(ui.video.srcObject) ui.video.srcObject.getTracks().forEach(t => t.stop());
+        ui.video.srcObject = null;
+      }
+    }
+
+    async function captureImage() {
+      const canvas = document.createElement('canvas');
+      canvas.width = ui.video.videoWidth;
+      canvas.height = ui.video.videoHeight;
+      canvas.getContext('2d').drawImage(ui.video, 0, 0);
+      return new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+    }
+
+    // Audio Helpers
+    async function playAudio(base64) {
+      const bin = atob(base64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const buf = await audioCtx.decodeAudioData(arr.buffer);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start(0);
+      return new Promise(r => src.onended = r);
+    }
+
+    function floatToWav(samples) {
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+      const writeString = (view, offset, string) => {
+        for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+      };
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, 16000, true);
+      view.setUint32(28, 32000, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, samples.length * 2, true);
+      for (let i = 0; i < samples.length; i++) {
+        let s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+      return new Blob([view], { type: 'audio/wav' });
+    }
+
+    initVAD();
+  </script>
+</body>
+</html>

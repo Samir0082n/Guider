@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Guider: AI Map</title>
+
+  <!-- Fonts & Icons -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.0/css/all.min.css">
+
+  <!-- LEAFLET MAP -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    :root { --bg: #000; --accent: #3a86ff; --text: #fff; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; overflow: hidden; height: 100vh; }
+    #map { width: 100%; height: 100%; position: absolute; z-index: 0; }
+
+    /* UI ELEMENTS */
+    .ui-layer { position: absolute; bottom: 0; left: 0; width: 100%; padding: 20px; box-sizing: border-box; background: linear-gradient(to top, rgba(0,0,0,1), transparent); z-index: 10; pointer-events: none; display: flex; flex-direction: column; gap: 10px; }
+    .controls { pointer-events: auto; background: rgba(20,20,20,0.95); padding: 20px; border-radius: 24px; border: 1px solid #333; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); }
+    .row { display: flex; gap: 10px; }
+    select { flex: 1; padding: 12px; border-radius: 12px; background: #333; color: white; border: 1px solid #444; font-size: 14px; outline: none; }
+
+    .btn { background: var(--accent); color: white; border: none; padding: 15px; border-radius: 12px; font-weight: bold; cursor: pointer; font-size: 16px; width: 100%; display: flex; justify-content: center; align-items: center; gap: 10px; transition: 0.2s; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .nav-btn { position: absolute; top: 20px; right: 20px; z-index: 20; background: white; color: black; border: none; padding: 10px 20px; border-radius: 30px; font-weight: bold; cursor: pointer; text-decoration: none; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: flex; align-items: center; gap: 8px; }
+
+    /* MARKERS */
+    .custom-div-icon { background: var(--accent); color: white; border-radius: 50%; text-align: center; line-height: 30px; font-weight: bold; border: 2px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.5); font-size: 14px; }
+    .start-icon { background: #00b894; }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+  <a href="voice.html" class="nav-btn"><i class="fas fa-microphone"></i> Voice Mode</a>
+
+  <div class="ui-layer">
+    <div class="controls">
+      <div class="row">
+        <select id="mode-select">
+          <option value="walk">Walking</option>
+          <option value="car">Driving</option>
+        </select>
+        <select id="vibe-select">
+          <option value="cultural">Cultural</option>
+          <option value="foodie">Foodie</option>
+          <option value="hidden_gems">Hidden Gems</option>
+          <option value="nature">Nature</option>
+        </select>
+      </div>
+      <button class="btn" id="generate-btn" onclick="buildRoute()">
+        <i class="fas fa-magic"></i> Build Route
+      </button>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = '/api/create-route';
+    let map, userLocation = null, routeLayer = null, markers = [];
+
+    window.onload = () => {
+      // Инициализация карты (центр Баку по умолчанию)
+      map = L.map('map', { zoomControl: false }).setView([40.4093, 49.8671], 13);
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap',
+        maxZoom: 19
+      }).addTo(map);
+
+      // Запрос геолокации
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            map.setView([userLocation.lat, userLocation.lng], 15);
+
+            // Маркер "Я здесь"
+            L.marker([userLocation.lat, userLocation.lng], {
+               icon: L.divIcon({ className: 'custom-div-icon start-icon', html: '<i class="fas fa-user"></i>', iconSize: [30,30], iconAnchor: [15,15] })
+            }).addTo(map).bindPopup("<b>You are here</b>").openPopup();
+          },
+          err => {
+            console.warn("Location denied, using default");
+            alert("Location access needed for best results. Using default center.");
+            userLocation = { lat: 40.4093, lng: 49.8671 }; // Default Baku
+          },
+          { enableHighAccuracy: true }
+        );
+      } else {
+        userLocation = { lat: 40.4093, lng: 49.8671 };
+      }
+    };
+
+    async function buildRoute() {
+      if (!userLocation) return alert("Waiting for location...");
+
+      const btn = document.getElementById('generate-btn');
+      const mode = document.getElementById('mode-select').value;
+      const type = document.getElementById('vibe-select').value;
+
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Planning...';
+      btn.disabled = true;
+
+      try {
+        console.log("Sending request to backend...");
+
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: userLocation.lat,
+            lng: userLocation.lng,
+            mode: mode,
+            type: type
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.error) throw new Error(data.error);
+        if (!data.places || data.places.length === 0) throw new Error("AI found no places.");
+
+        console.log("AI returned places:", data.places);
+        await drawRoute(data.places, mode);
+
+      } catch (error) {
+        console.error(error);
+        alert("Error: " + error.message);
+      } finally {
+        btn.innerHTML = '<i class="fas fa-magic"></i> Build Route';
+        btn.disabled = false;
+      }
+    }
+
+    async function drawRoute(places, mode) {
+      // 1. Очистка старого
+      if (routeLayer) map.removeLayer(routeLayer);
+      markers.forEach(m => map.removeLayer(m));
+      markers = [];
+
+      // 2. Добавление маркеров
+      places.forEach((p, i) => {
+        if(i === 0) return; // Пропускаем старт (он уже есть)
+
+        const m = L.marker([p.lat, p.lng], {
+          icon: L.divIcon({ className: 'custom-div-icon', html: i, iconSize: [30,30], iconAnchor: [15,15] })
+        }).addTo(map).bindPopup(`<b>${p.name}</b><br><span style="font-size:12px; opacity:0.8">${p.description}</span>`);
+        markers.push(m);
+      });
+
+      // 3. Попытка построить дорогу (OSRM)
+      // Формат OSRM: lng,lat;lng,lat
+      const coordsString = places.map(p => `${p.lng},${p.lat}`).join(';');
+      const profile = mode === 'walk' ? 'walking' : 'driving';
+      const osrmUrl = `https://router.project-osrm.org/route/v1/${profile}/${coordsString}?overview=full&geometries=geojson`;
+
+      try {
+        console.log("Fetching road path...");
+        const res = await fetch(osrmUrl);
+        const json = await res.json();
+
+        if (json.code !== 'Ok') throw new Error("OSRM Routing failed");
+
+        // Рисуем красивую дорогу
+        routeLayer = L.geoJSON(json.routes[0].geometry, {
+          style: { color: '#3a86ff', weight: 6, opacity: 0.8, lineCap: 'round' }
+        }).addTo(map);
+
+        console.log("Road drawn successfully!");
+
+      } catch (e) {
+        console.warn("Routing service error:", e);
+        // ПЛАН Б: Если сервис дорог не работает, рисуем прямые линии (пунктир)
+        console.log("Fallback: Drawing straight lines");
+
+        const latLngs = places.map(p => [p.lat, p.lng]);
+        routeLayer = L.polyline(latLngs, {
+            color: '#ff4757',
+            weight: 4,
+            opacity: 0.7,
+            dashArray: '10, 10' // Пунктирная линия
+        }).addTo(map);
+      }
+
+      // 4. Фокусируем карту на маршруте
+      if (routeLayer) {
+        map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+      }
+    }
+  </script>
+</body>
+</html>
